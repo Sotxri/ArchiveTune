@@ -1,0 +1,79 @@
+name: Sync Upstream Release to Feature Branch
+
+on:
+  schedule:
+    # Prüft 2x täglich (um 0:00 Uhr und 12:00 Uhr UTC)
+    - cron: '0 0,12 * * *'
+  workflow_dispatch: # Erlaubt manuelles Ausführen im Actions-Tab
+
+jobs:
+  sync-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch Latest Release Tag from Upstream
+        id: upstream-release
+        run: |
+          # Pfad zum Original-Repo (ANPASSEN, falls nötig):
+          UPSTREAM_REPO="rukamori/ArchiveTune"
+          
+          LATEST_TAG=$(curl -s https://api.github.com/repos/$UPSTREAM_REPO/releases/latest | jq -r .tag_name)
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "Neuestes Upstream Release: $LATEST_TAG"
+
+      - name: Sync main Branch with Upstream Release
+        run: |
+          TAG="${{ steps.upstream-release.outputs.tag }}"
+          git remote add upstream https://github.com/rukamori/ArchiveTune.git || true
+          git fetch upstream tag $TAG --no-tags
+          
+          # Spiegel deinen main Branch auf das neueste Release-Tag
+          git checkout main
+          git merge $TAG --ff-only || git reset --hard $TAG
+          git push origin main --force
+
+      - name: Merge Release Tag into feature/sonos-play
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.upstream-release.outputs.tag }}"
+          FEATURE_BRANCH="custom"
+
+          git checkout $FEATURE_BRANCH
+
+          # Prüfen, ob der Tag bereits im Feature-Branch ist
+          if git merge-base --is-ancestor $TAG HEAD; then
+            echo "Release $TAG ist bereits in $FEATURE_BRANCH integriert."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Versuche den Tag direkt in den Feature-Branch zu mergen
+          if git merge $TAG -m "chore: sync with upstream release $TAG [skip ci]" --allow-unrelated-histories; then
+            echo "Merge erfolgreich! Pushe Änderungen..."
+            git push origin $FEATURE_BRANCH
+          else
+            echo "Merge-Konflikt! Erstelle Pull Request..."
+            git merge --abort
+            
+            SYNC_BRANCH="sync/release-$TAG"
+            git checkout -b $SYNC_BRANCH
+            git merge $TAG -m "chore: sync with upstream release $TAG [skip ci]" || true
+            git push origin $SYNC_BRANCH --force
+
+            gh pr create \
+              --title "Sync Upstream Release $TAG into $FEATURE_BRANCH" \
+              --body "Ein neues Release ($TAG) ist da. Bitte Konflikte prüfen und mergen." \
+              --base $FEATURE_BRANCH \
+              --head $SYNC_BRANCH
+          fi
