@@ -35,7 +35,6 @@ import moe.rukamori.archivetune.innertube.models.YouTubeClient.Companion.WEB
 import moe.rukamori.archivetune.innertube.models.YouTubeClient.Companion.WEB_CREATOR
 import moe.rukamori.archivetune.innertube.models.YouTubeClient.Companion.WEB_REMIX
 import moe.rukamori.archivetune.innertube.models.response.PlayerResponse
-import moe.rukamori.archivetune.utils.potoken.BotGuardTokenGenerator
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import timber.log.Timber
 import java.util.Locale
@@ -151,6 +150,7 @@ object YTPlayerUtils {
         val audioQuality: AudioQuality,
         val networkMetered: Boolean,
         val authFingerprint: String,
+        val preferAac: Boolean = false,
     )
 
     private data class CachedPlaybackData(
@@ -446,6 +446,7 @@ object YTPlayerUtils {
         preferredStreamClient: PlayerStreamClient = PlayerStreamClient.WEB_REMIX,
         // if provided, this preference overrides ConnectivityManager.isActiveNetworkMetered
         networkMetered: Boolean? = null,
+        preferAac: Boolean = false,
     ): Result<PlaybackData> {
         val isMetered = networkMetered ?: connectivityManager.isActiveNetworkMetered
         val initialKey =
@@ -454,6 +455,7 @@ object YTPlayerUtils {
                 audioQuality = audioQuality,
                 networkMetered = isMetered,
                 authFingerprint = YouTube.currentPlaybackAuthState().fingerprint,
+                preferAac = preferAac,
             )
         getCachedPlaybackData(initialKey)?.let { return Result.success(it) }
         val resolutionMutex =
@@ -465,6 +467,7 @@ object YTPlayerUtils {
                     audioQuality = audioQuality,
                     networkMetered = isMetered,
                     authFingerprint = YouTube.currentPlaybackAuthState().fingerprint,
+                    preferAac = preferAac,
                 )
             getCachedPlaybackData(currentKey)?.let { return@withLock Result.success(it) }
             resolvePlaybackData(
@@ -474,6 +477,7 @@ object YTPlayerUtils {
                 connectivityManager = connectivityManager,
                 preferredStreamClient = preferredStreamClient,
                 networkMetered = isMetered,
+                preferAac = preferAac,
             ).onSuccess { playbackData ->
                 cachePlaybackData(
                     key = currentKey.copy(authFingerprint = playbackData.authFingerprint),
@@ -493,6 +497,7 @@ object YTPlayerUtils {
         connectivityManager: ConnectivityManager,
         preferredStreamClient: PlayerStreamClient,
         networkMetered: Boolean,
+        preferAac: Boolean,
     ): Result<PlaybackData> =
         runCatching {
             val attempts =
@@ -516,6 +521,7 @@ object YTPlayerUtils {
                             connectivityManager = connectivityManager,
                             preferredStreamClient = preferredStreamClient,
                             networkMetered = networkMetered,
+                            preferAac = preferAac,
                         )
                     }
                 if (attemptResult.isSuccess) return@runCatching attemptResult.getOrThrow()
@@ -536,6 +542,7 @@ object YTPlayerUtils {
                                 connectivityManager = connectivityManager,
                                 preferredStreamClient = preferredStreamClient,
                                 networkMetered = networkMetered,
+                                preferAac = preferAac,
                             )
                         }
                     if (rotatedAttemptResult.isSuccess) return@runCatching rotatedAttemptResult.getOrThrow()
@@ -551,12 +558,14 @@ object YTPlayerUtils {
         audioQuality: AudioQuality,
         networkMetered: Boolean,
         authFingerprint: String,
+        preferAac: Boolean = false,
     ): PlaybackDataCacheKey =
         PlaybackDataCacheKey(
             videoId = videoId,
             audioQuality = audioQuality,
             networkMetered = networkMetered,
             authFingerprint = authFingerprint,
+            preferAac = preferAac,
         )
 
     private fun getCachedPlaybackData(key: PlaybackDataCacheKey): PlaybackData? {
@@ -662,6 +671,7 @@ object YTPlayerUtils {
         connectivityManager: ConnectivityManager,
         preferredStreamClient: PlayerStreamClient,
         networkMetered: Boolean?,
+        preferAac: Boolean = false,
     ): PlaybackData {
         Timber.tag(logTag).i("Fetching player response for videoId: $videoId, playlistId: $playlistId")
         val signatureTimestamp = getSignatureTimestampOrNull(videoId)
@@ -705,31 +715,13 @@ object YTPlayerUtils {
 
         Timber.tag(logTag).i("Fetching metadata response using client: ${metadataClient.clientName}")
 
-        var metadataPoToken: String? = null
-        if (metadataClient.useWebPoTokens && sessionId != null) {
-            try {
-                val tokenResult = BotGuardTokenGenerator.mintToken(videoId, sessionId)
-                metadataPoToken = tokenResult?.playerToken
-                tokenResult?.let {
-                    YouTube.authState =
-                        YouTube.authState.copy(
-                            poTokenGvs = it.sessionToken,
-                            poTokenPlayer = it.playerToken,
-                            webClientPoTokenEnabled = true,
-                        )
-                }
-            } catch (e: Exception) {
-                Timber.tag(logTag).w(e, "PoToken generation failed for metadata request")
-            }
-        }
-
         var metadataResult =
             YouTube.player(
                 videoId = videoId,
                 playlistId = playlistId,
                 client = metadataClient,
                 signatureTimestamp = signatureTimestamp,
-                poToken = metadataPoToken,
+                poToken = null,
                 setLogin = true,
                 authState = authState,
             )
@@ -750,31 +742,13 @@ object YTPlayerUtils {
             canUseLoggedInPlayback = false
             clearPlaybackAuthCaches()
 
-            val newSessionId = authState.visitorData
-            if (metadataClient.useWebPoTokens && newSessionId != null) {
-                try {
-                    val tokenResult = BotGuardTokenGenerator.mintToken(videoId, newSessionId)
-                    metadataPoToken = tokenResult?.playerToken
-                    tokenResult?.let {
-                        YouTube.authState =
-                            YouTube.authState.copy(
-                                poTokenGvs = it.sessionToken,
-                                poTokenPlayer = it.playerToken,
-                                webClientPoTokenEnabled = true,
-                            )
-                    }
-                } catch (e: Exception) {
-                    Timber.tag(logTag).w(e, "PoToken generation failed for metadata retry request")
-                }
-            }
-
             metadataResult =
                 YouTube.player(
                     videoId = videoId,
                     playlistId = playlistId,
                     client = metadataClient,
                     signatureTimestamp = signatureTimestamp,
-                    poToken = metadataPoToken,
+                    poToken = null,
                     setLogin = true,
                     authState = authState,
                 )
@@ -992,6 +966,7 @@ object YTPlayerUtils {
                     streamPlayerResponse,
                     audioQuality,
                     isMetered,
+                    preferAac = preferAac,
                 )
 
             if (candidates.isEmpty()) continue
@@ -1163,33 +1138,13 @@ object YTPlayerUtils {
         Timber.tag(logTag).i("Fetching metadata player response for videoId: $videoId")
 
         val signatureTimestamp = getSignatureTimestampOrNull(videoId)
-        val sessionId = authState.visitorData
-        var poToken: String? = null
-
-        if (MAIN_CLIENT.useWebPoTokens && sessionId != null) {
-            try {
-                val tokenResult = BotGuardTokenGenerator.mintToken(videoId, sessionId)
-                poToken = tokenResult?.playerToken
-                tokenResult?.let {
-                    YouTube.authState =
-                        YouTube.authState.copy(
-                            poTokenGvs = it.sessionToken,
-                            poTokenPlayer = it.playerToken,
-                            webClientPoTokenEnabled = true,
-                        )
-                }
-            } catch (e: Exception) {
-                Timber.tag(logTag).w(e, "PoToken generation failed for metadata request")
-            }
-        }
-
         return YouTube
             .player(
                 videoId = videoId,
                 playlistId = playlistId,
                 client = MAIN_CLIENT,
                 signatureTimestamp = signatureTimestamp,
-                poToken = poToken,
+                poToken = null,
                 setLogin = true,
                 authState = authState,
             ).onSuccess { Timber.tag(logTag).d("Successfully fetched metadata") }
@@ -1215,8 +1170,9 @@ object YTPlayerUtils {
         playerResponse: PlayerResponse,
         audioQuality: AudioQuality,
         networkMetered: Boolean,
+        preferAac: Boolean = false,
     ): List<PlayerResponse.StreamingData.Format> {
-        Timber.tag(logTag).i("Finding format with audioQuality: $audioQuality, network metered: $networkMetered")
+        Timber.tag(logTag).i("Finding format with audioQuality: $audioQuality, network metered: $networkMetered, preferAac: $preferAac")
 
         val audioFormats =
             playerResponse.streamingData
@@ -1246,13 +1202,13 @@ object YTPlayerUtils {
         val preferHigher =
             compareByDescending<PlayerResponse.StreamingData.Format> { it.url != null }
                 .thenByDescending { it.bitrate }
-                .thenByDescending { codecRank(extractCodec(it.mimeType)) }
+                .thenByDescending { codecRank(extractCodec(it.mimeType), preferAac) }
                 .thenByDescending { it.audioSampleRate ?: 0 }
 
         val preferLowerAboveTarget =
             compareByDescending<PlayerResponse.StreamingData.Format> { it.url != null }
                 .thenBy { it.bitrate }
-                .thenByDescending { codecRank(extractCodec(it.mimeType)) }
+                .thenByDescending { codecRank(extractCodec(it.mimeType), preferAac) }
                 .thenByDescending { it.audioSampleRate ?: 0 }
 
         val candidates =
@@ -1328,11 +1284,14 @@ object YTPlayerUtils {
         return true
     }
 
-    private fun codecRank(codec: String?): Int =
+    private fun codecRank(
+        codec: String?,
+        preferAac: Boolean = false,
+    ): Int =
         when {
             codec.isNullOrBlank() -> 0
-            codec.contains("opus", ignoreCase = true) -> 3
-            codec.contains("mp4a", ignoreCase = true) -> 2
+            codec.contains("opus", ignoreCase = true) -> if (preferAac) 2 else 3
+            codec.contains("mp4a", ignoreCase = true) -> if (preferAac) 3 else 2
             else -> 1
         }
 

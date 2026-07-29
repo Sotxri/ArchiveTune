@@ -58,7 +58,6 @@ import moe.rukamori.archivetune.utils.clearPlaybackAuthSession
 import moe.rukamori.archivetune.utils.clearPlaybackWebAuthSession
 import moe.rukamori.archivetune.utils.dataStore
 import moe.rukamori.archivetune.utils.get
-import moe.rukamori.archivetune.utils.potoken.BotGuardTokenGenerator
 import moe.rukamori.archivetune.utils.reportException
 import moe.rukamori.archivetune.utils.toPlaybackAuthState
 import okhttp3.Dns
@@ -102,7 +101,8 @@ class App :
             Timber.plant(Timber.DebugTree())
             return
         }
-        BotGuardTokenGenerator.initialize(this)
+        // Fuck this shit
+        //BotGuardTokenGenerator.initialize(this)
         PreferenceStore.start(this)
         Timber.plant(Timber.DebugTree())
         try {
@@ -259,10 +259,6 @@ class App :
                     YouTube.authState = authState
                     if (previousFingerprint != authState.fingerprint) {
                         YTPlayerUtils.clearPlaybackAuthCaches()
-                        val visitorData = authState.visitorData
-                        if (!visitorData.isNullOrBlank()) {
-                            BotGuardTokenGenerator.preWarm(visitorData)
-                        }
                     }
                 }
         }
