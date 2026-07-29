@@ -25,3 +25,16 @@ fun isInternetAvailable(context: Context): Boolean {
         else -> false
     }
 }
+
+fun getLocalIpv4Address(): String? =
+    runCatching {
+        java.net.NetworkInterface
+            .getNetworkInterfaces()
+            .toList()
+            .asSequence()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { it.inetAddresses.toList().asSequence() }
+            .filterIsInstance<java.net.Inet4Address>()
+            .mapNotNull { it.hostAddress }
+            .firstOrNull { it.isNotBlank() && it != "127.0.0.1" }
+    }.getOrNull()

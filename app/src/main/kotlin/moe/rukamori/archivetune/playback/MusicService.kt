@@ -233,6 +233,8 @@ import moe.rukamori.archivetune.playback.queues.filterExplicit
 import moe.rukamori.archivetune.playback.queues.filterVideo
 import moe.rukamori.archivetune.playback.queues.hasBlockedArtist
 import moe.rukamori.archivetune.scrobbling.LastFmServiceConfig
+import moe.rukamori.archivetune.sonos.SonosRepository
+import moe.rukamori.archivetune.sonos.SonosSoapClient
 import moe.rukamori.archivetune.storage.StorageFolderKind
 import moe.rukamori.archivetune.storage.StorageLocationRepository
 import moe.rukamori.archivetune.together.TogetherPlaybackSync
@@ -248,6 +250,7 @@ import moe.rukamori.archivetune.utils.dataStore
 import moe.rukamori.archivetune.utils.enumPreference
 import moe.rukamori.archivetune.utils.get
 import moe.rukamori.archivetune.utils.getAsync
+import moe.rukamori.archivetune.utils.getLocalIpv4Address
 import moe.rukamori.archivetune.utils.isLocalMediaId
 import moe.rukamori.archivetune.utils.isLowDataModeActive
 import moe.rukamori.archivetune.utils.reportException
@@ -303,6 +306,12 @@ class MusicService :
 
     @Inject
     lateinit var equalizerPlaybackController: EqualizerPlaybackController
+
+    @Inject
+    lateinit var sonosRepository: SonosRepository
+
+    @Inject
+    lateinit var sonosSoapClient: SonosSoapClient
 
     private lateinit var audioManager: AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -1191,6 +1200,70 @@ class MusicService :
                 }
             }
         }
+
+        combine(
+            sonosRepository.selectedDevice,
+            playerVolume,
+        ) { device, volume -> device to volume }
+            .collectLatest(scope) { (device, volume) ->
+                if (device != null) {
+                    sonosSoapClient.setVolume(device.ip, (volume * 100).toInt())
+                }
+            }
+
+        sonosRepository.selectedDevice.collectLatest(scope) { device ->
+            // Clear URL caches when switching to/from Sonos to ensure correct codec
+            playbackUrlCache.clear()
+            extractorPlaybackUrlCache.clear()
+            audioNormalizationFactorCache.clear() // Clear this too to force re-fetch format
+
+            if (device != null) {
+                // Sync play/pause state when device is selected
+                if (player.isPlaying) {
+                    sonosSoapClient.play(device.ip)
+                } else {
+                    sonosSoapClient.pause(device.ip)
+                }
+            }
+        }
+
+        // Add a listener to player to sync play/pause with Sonos
+        player.addListener(object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                val device = sonosRepository.selectedDevice.value ?: return
+                scope.launch {
+                    if (isPlaying) {
+                        sonosSoapClient.play(device.ip)
+                    } else {
+                        sonosSoapClient.pause(device.ip)
+                    }
+                }
+            }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val device = sonosRepository.selectedDevice.value ?: return
+                val currentMediaId = mediaItem?.mediaId ?: return
+                scope.launch {
+                    // When track changes, update Sonos URI
+                    // Note: Use the local stream URL from NanoHTTPD
+                    val localIp = getLocalIpv4Address() ?: "127.0.0.1"
+                    val localStreamUrl = "http://$localIp:8080/stream"
+                    val title = mediaItem.mediaMetadata.title?.toString() ?: "Unknown Title"
+                    val mimeType = withContext(Dispatchers.IO) {
+                        val format = database.format(currentMediaId).first()
+                        if (format?.mimeType?.contains("webm") == true) {
+                            "audio/mp4" // Force AAC for Sonos metadata
+                        } else {
+                            format?.mimeType ?: "audio/mpeg"
+                        }
+                    }
+                    sonosSoapClient.setAVTransportURI(device.ip, localStreamUrl, title, mimeType)
+                    if (player.isPlaying) {
+                        sonosSoapClient.play(device.ip)
+                    }
+                }
+            }
+        })
 
         combine(playerVolume, normalizeFactor, audioFocusVolumeFactor) { playerVolume, normalizeFactor, audioFocusVolumeFactor ->
             calculateEffectivePlayerVolume(playerVolume, normalizeFactor, audioFocusVolumeFactor)
@@ -5554,19 +5627,6 @@ class MusicService :
             inLibrary = null,
         )
 
-    private fun getLocalIpv4Address(): String? =
-        runCatching {
-            java.net.NetworkInterface
-                .getNetworkInterfaces()
-                .toList()
-                .asSequence()
-                .filter { it.isUp && !it.isLoopback }
-                .flatMap { it.inetAddresses.toList().asSequence() }
-                .filterIsInstance<java.net.Inet4Address>()
-                .map { it.hostAddress }
-                .firstOrNull { it.isNotBlank() && it != "127.0.0.1" }
-        }.getOrNull()
-
     private fun toggleLibrary() {
         database.query {
             currentSong.value?.let {
@@ -7103,10 +7163,12 @@ class MusicService :
             return dataSpec
         }
         val mediaId = dataSpec.key ?: return dataSpec
+        val preferAac = sonosRepository.selectedDevice.value != null
         val storedFormat =
             runBlocking(Dispatchers.IO) {
                 database.format(mediaId).first()
-            }
+            }?.takeUnless { preferAac && it.mimeType.contains("webm") }
+
         storedFormat?.let { format ->
             audioNormalizationFactorCache[mediaId] = calculateAudioNormalizationFactor(format, normalizeAudio = true)
         }
@@ -7169,6 +7231,9 @@ class MusicService :
                     authFingerprint = authFingerprint,
                     minimumRemainingMs = YTPlayerUtils.STREAM_URL_EXPIRY_SAFETY_MS,
                 )
+            }?.takeIf {
+                // If we need AAC but the cached URL is not AAC (WebM), force refresh
+                !preferAac || it.url.contains("mime=audio%2Fmp4") || it.url.contains("itag=140")
             }?.let {
                 scope.launch(Dispatchers.IO) { recoverSong(mediaId) }
                 val resolvedDataSpec = dataSpec.withUri(it.url.toUri())
@@ -7187,6 +7252,7 @@ class MusicService :
 
         val playbackData =
             runBlocking(Dispatchers.IO) {
+                val preferAac = sonosRepository.selectedDevice.value != null
                 retryWithoutPlaybackLoginContext {
                     YTPlayerUtils.playerResponseForPlayback(
                         mediaId,
@@ -7194,6 +7260,7 @@ class MusicService :
                         connectivityManager = connectivityManager,
                         preferredStreamClient = preferredStreamClient,
                         networkMetered = lowDataModeActive,
+                        preferAac = preferAac,
                     )
                 }.recoverCatching { youtubeFailure ->
                     if (youtubeFailure !is YTPlayerUtils.BotDetectionPlaybackException) throw youtubeFailure
@@ -8329,6 +8396,24 @@ class MusicService :
     fun updateWidget() {
         widgetUpdater.update()
         widgetUpdater.updateProgressTracking()
+    }
+
+    fun getCurrentResolvedStreamUrl(): String? {
+        val mediaId = currentMediaMetadata.value?.id ?: return null
+        return playbackUrlCache[mediaId]?.url ?: extractorPlaybackUrlCache[mediaId]?.url
+    }
+
+    fun getCurrentMimeType(): String {
+        val mediaId = currentMediaMetadata.value?.id ?: return "audio/mpeg"
+        val preferAac = sonosRepository.selectedDevice.value != null
+        return runBlocking(Dispatchers.IO) {
+            val format = database.format(mediaId).first()
+            if (preferAac && format?.mimeType?.contains("webm") == true) {
+                "audio/mp4"
+            } else {
+                format?.mimeType ?: "audio/mpeg"
+            }
+        }
     }
 
     inner class MusicBinder : Binder() {

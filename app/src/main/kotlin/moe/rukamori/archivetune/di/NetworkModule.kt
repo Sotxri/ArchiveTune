@@ -14,11 +14,16 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import moe.rukamori.archivetune.utils.NetworkConnectivityObserver
+import okhttp3.OkHttpClient
 import javax.inject.Singleton
 
 @Module
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
+    @Provides
+    @Singleton
+    fun provideOkHttpClient(): OkHttpClient = OkHttpClient()
+
     @Provides
     @Singleton
     fun provideNetworkConnectivityObserver(

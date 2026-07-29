@@ -26,6 +26,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
@@ -64,6 +66,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -100,6 +103,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.Player.STATE_ENDED
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.navigation.NavController
+import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
 import me.saket.squiggles.SquigglySlider
 import moe.rukamori.archivetune.R
@@ -114,6 +118,8 @@ import moe.rukamori.archivetune.extensions.togglePlayPause
 import moe.rukamori.archivetune.extensions.toggleRepeatMode
 import moe.rukamori.archivetune.models.MediaMetadata
 import moe.rukamori.archivetune.playback.PlayerConnection
+import moe.rukamori.archivetune.sonos.SonosDevicePicker
+import moe.rukamori.archivetune.sonos.SonosViewModel
 import moe.rukamori.archivetune.ui.component.BottomSheetPageState
 import moe.rukamori.archivetune.ui.component.BottomSheetState
 import moe.rukamori.archivetune.ui.component.MenuState
@@ -127,6 +133,7 @@ import moe.rukamori.archivetune.ui.utils.highRes
 import moe.rukamori.archivetune.utils.makeTimeString
 import moe.rukamori.archivetune.utils.rememberLowDataModeActive
 import moe.rukamori.archivetune.utils.rememberPreference
+import moe.rukamori.archivetune.utils.getLocalIpv4Address
 
 private const val PlayerBackgroundMaxBlurRadius = 64f
 private const val ExplicitBadgeInlineId = "explicitBadge"
@@ -264,6 +271,30 @@ fun PlayerTopActions(
     val haptic = LocalHapticFeedback.current
     val shuffleModeEnabled by playerConnection.shuffleModeEnabled.collectAsState()
 
+    val sonosViewModel: SonosViewModel = hiltViewModel()
+    val discoveredDevices by sonosViewModel.discoveredDevices.collectAsState()
+    val selectedDevice by sonosViewModel.selectedDevice.collectAsState()
+    val sonosPermissionGranted by sonosViewModel.permissionGranted.collectAsState()
+    val currentFormat by playerConnection.currentFormat.collectAsState(initial = null)
+    var showSonosPicker by remember { mutableStateOf(false) }
+
+    if (showSonosPicker) {
+        SonosDevicePicker(
+            devices = discoveredDevices,
+            selectedDevice = selectedDevice,
+            permissionGranted = sonosPermissionGranted,
+            onPermissionResult = { sonosViewModel.updatePermissionStatus() },
+            onDeviceSelected = { device ->
+                sonosViewModel.selectDevice(
+                    device = device,
+                    trackTitle = mediaMetadata.title,
+                    mimeType = currentFormat?.mimeType ?: "audio/mpeg"
+                )
+            },
+            onDismiss = { showSonosPicker = false }
+        )
+    }
+
     when (playerDesignStyle) {
         PlayerDesignStyle.V2 -> {
             val shareShape =
@@ -286,6 +317,25 @@ fun PlayerTopActions(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                Box(
+                    modifier =
+                        Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(textButtonColor)
+                            .clickable {
+                                showSonosPicker = true
+                            },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Speaker,
+                        contentDescription = null,
+                        tint = if (selectedDevice != null) MaterialTheme.colorScheme.primary else iconButtonColor,
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
+
                 Box(
                     modifier =
                         Modifier
@@ -357,6 +407,23 @@ fun PlayerTopActions(
                             .size(36.dp)
                             .clip(RoundedCornerShape(12.dp))
                             .clickable {
+                                showSonosPicker = true
+                            },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Speaker,
+                        contentDescription = null,
+                        tint = if (selectedDevice != null) MaterialTheme.colorScheme.primary else textBackgroundColor.copy(alpha = 0.7f),
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                Box(
+                    modifier =
+                        Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
                                 val intent =
                                     Intent().apply {
                                         action = Intent.ACTION_SEND
@@ -412,6 +479,25 @@ fun PlayerTopActions(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                Surface(
+                    onClick = { showSonosPicker = true },
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (selectedDevice != null) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else textBackgroundColor.copy(alpha = 0.12f),
+                    modifier =
+                        Modifier
+                            .height(44.dp)
+                            .width(44.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        Icon(
+                            imageVector = Icons.Default.Speaker,
+                            contentDescription = null,
+                            tint = if (selectedDevice != null) MaterialTheme.colorScheme.primary else textBackgroundColor,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
+
                 Surface(
                     onClick = {
                         val intent =
