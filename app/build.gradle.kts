@@ -1,23 +1,5 @@
-import org.gradle.api.DefaultTask
-import org.gradle.api.provider.Property
-import org.gradle.api.tasks.Input
-import org.gradle.api.tasks.TaskAction
-import org.gradle.work.DisableCachingByDefault
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.util.Properties
-
-@DisableCachingByDefault(because = "Validation-only task has no outputs.")
-abstract class ValidateStartIoReleaseConfigurationTask : DefaultTask() {
-    @get:Input
-    abstract val appId: Property<String>
-
-    @TaskAction
-    fun validate() {
-        require(appId.get().isNotBlank()) {
-            "START_IO_APP_ID is required for GMS release builds."
-        }
-    }
-}
 
 plugins {
     alias(libs.plugins.android.application)
@@ -42,19 +24,6 @@ fun String.asBuildConfigString(): String =
             .replace("\r", "\\r")
             .replace("\t", "\\t")
     }\""
-
-val fallbackDataServerUrl = "archive-tune-admin-remote.vercel.app"
-val dataServerUrl =
-    rootProject
-        .file("DataServer.txt")
-        .takeIf { it.isFile }
-        ?.readText()
-        ?.trim()
-        ?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
-        ?: fallbackDataServerUrl
-val apiBearerToken = System.getenv("API_BEARER_TOKEN")?.trim()
-    ?: localProperties.getProperty("API_BEARER_TOKEN")?.trim()
-    ?: ""
 
 val discordApplicationId =
     (
@@ -81,21 +50,6 @@ val startIoAppId =
             ?: System.getenv("START_IO_APP_ID")
             ?: ""
         ).trim()
-tasks.register<ValidateStartIoReleaseConfigurationTask>("validateStartIoReleaseConfiguration") {
-    group = "verification"
-    description = "Validates the production Start.io identifier for GMS release artifacts."
-    appId.set(startIoAppId)
-}
-
-tasks.configureEach {
-    val isGmsReleaseArtifactTask =
-        (name.startsWith("assemble") || name.startsWith("bundle")) &&
-            name.contains("Gms") &&
-            name.endsWith("Release")
-    if (isGmsReleaseArtifactTask) {
-        dependsOn("validateStartIoReleaseConfiguration")
-    }
-}
 
 android {
     namespace = "moe.rukamori.archivetune"
@@ -139,9 +93,6 @@ android {
                 ?: System.getenv("EXTRACTOR_BEARER")
                 ?: ""
         buildConfigField("String", "EXTRACTOR_BEARER", "\"$extractorBearer\"")
-
-        buildConfigField("String", "DATA_SERVER_URL", dataServerUrl.asBuildConfigString())
-        buildConfigField("String", "API_BEARER_TOKEN", apiBearerToken.asBuildConfigString())
 
         val nightlyBuildHash =
             (
