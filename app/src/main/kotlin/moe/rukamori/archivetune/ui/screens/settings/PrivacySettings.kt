@@ -60,13 +60,6 @@ fun PrivacySettings(navController: NavController) {
     val database = LocalDatabase.current
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    val showMessage: (String) -> Unit =
-        remember(coroutineScope, snackbarHostState) {
-            { message ->
-                coroutineScope.launch { snackbarHostState.showSnackbar(message) }
-                Unit
-            }
-        }
     val (pauseListenHistory, onPauseListenHistoryChange) =
         rememberPreference(
             key = PauseListenHistoryKey,
@@ -249,8 +242,6 @@ fun PrivacySettings(navController: NavController) {
                     )
                 }
             }
-
-            SupportAdPrivacySettingsSection(onMessage = showMessage)
         }
     }
 }

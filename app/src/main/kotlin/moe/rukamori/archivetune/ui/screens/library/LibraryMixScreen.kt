@@ -113,13 +113,6 @@ fun LibraryMixScreen(
     val playerConnection = LocalPlayerConnection.current ?: return
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    val showMessage: (String) -> Unit =
-        remember(coroutineScope, snackbarHostState) {
-            { message ->
-                coroutineScope.launch { snackbarHostState.showSnackbar(message) }
-                Unit
-            }
-        }
     val database = LocalDatabase.current
 
     val likedSongsCount by database.likedSongsCount().collectAsState(initial = 0)
@@ -298,15 +291,6 @@ fun LibraryMixScreen(
 
                             Spacer(modifier = Modifier.weight(1f))
                         }
-                    }
-                }
-
-                if (supportArchiveTuneAvailable) {
-                    item(key = "support_archive_tune", contentType = "support_ad") {
-                        SupportArchiveTuneSection(
-                            onMessage = showMessage,
-                            modifier = Modifier.padding(horizontal = 24.dp),
-                        )
                     }
                 }
 
